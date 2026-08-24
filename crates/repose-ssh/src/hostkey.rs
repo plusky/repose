@@ -197,6 +197,11 @@ impl HostKeyVerifier {
         });
     }
 
+    /// Whether the configured policy disables host-key validation outright.
+    pub(crate) fn validation_disabled(&self) -> bool {
+        matches!(self.policy, HostKeyPolicy::No | HostKeyPolicy::Off)
+    }
+
     pub(crate) fn host(&self) -> &str {
         &self.host
     }

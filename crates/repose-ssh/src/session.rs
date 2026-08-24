@@ -113,8 +113,25 @@ impl Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh::keys::ssh_key::PublicKey,
+        server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        // known_hosts matching has no `@cert-authority` support, so a host
+        // certificate cannot be validated against anything and is refused.
+        // Unreachable in practice: `Preferred::default()` advertises no
+        // `*-cert-v01@openssh.com`, so a server cannot negotiate one.
+        let server_public_key = match server_public_key {
+            russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key,
+            russh::keys::PublicKeyOrCertificate::Certificate(_) => {
+                if self.verifier.validation_disabled() {
+                    return Ok(true);
+                }
+                log::error!(
+                    "{}: server offered a host certificate, which repose cannot validate; rejecting",
+                    self.verifier.host()
+                );
+                return Ok(false);
+            }
+        };
         match self.verifier.decide_public_key(server_public_key) {
             KeyDecision::Accept => Ok(true),
             KeyDecision::Reject => Ok(false),
@@ -1053,10 +1070,23 @@ mod tests {
     use crate::openssh_config::OpenSshOptions;
     use repose_core::config::HostKeyPolicy;
     use russh::client::Handler;
-    use russh::keys::ssh_key::PublicKey;
+    use russh::keys::PublicKeyOrCertificate;
+    use russh::keys::ssh_key::{Certificate, PublicKey};
 
     const TEST_KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILM+rvN+ot98qgEN796jTiQfZfG1KaT0PtFDJ/XFSqti";
+
+    /// An `ssh-ed25519-cert-v01@openssh.com` host certificate, signed by a
+    /// throwaway CA, valid for the principal `host`.
+    const TEST_HOST_CERT: &str = "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAAINeWzBsdfZmRI9d3EINs42iTH0pWjQYPxgLwkieqDJccAAAAID9Dw+0BhZEyhhnocT8UnoOh69GWwPGMLDQQsVCNc14OAAAAAAAAAAAAAAACAAAADnRlc3QtaG9zdC1jZXJ0AAAACAAAAARob3N0AAAAAGqDPu8AAAAAbGxbbwAAAAAAAAAAAAAAAAAAADMAAAALc3NoLWVkMjU1MTkAAAAgtlYII5S1UbAL9t8Mn02akH0bjipPWvWGOfZ4vii4oEgAAABTAAAAC3NzaC1lZDI1NTE5AAAAQADGx1sLeBo2eo68Z4OySgmVNYDwrSIi8zthHPE2Kv0dv+py6gYkwXoNrDlsV/d5Ehgto4iHRMZohCB5dSv8pA4= test-host";
+
+    /// Wrap a plain key the way russh hands one to `check_server_key`.
+    fn offered(key: &PublicKey) -> PublicKeyOrCertificate {
+        PublicKeyOrCertificate::PublicKey {
+            key: key.clone(),
+            hash_alg: None,
+        }
+    }
 
     #[tokio::test]
     async fn with_deadline_returns_ok_unchanged_for_a_fast_future() {
@@ -1414,7 +1444,7 @@ mod tests {
 
         assert!(
             handler
-                .check_server_key(&key)
+                .check_server_key(&offered(&key))
                 .await
                 .expect("check_server_key should not error"),
             "first contact should be accepted once persisted"
@@ -1430,10 +1460,62 @@ mod tests {
         // recorded by the first call and does not need to write again.
         assert!(
             handler
-                .check_server_key(&key)
+                .check_server_key(&offered(&key))
                 .await
                 .expect("check_server_key should not error")
         );
+    }
+
+    /// repose has no `@cert-authority` support, so a host certificate cannot
+    /// be checked against anything and must not be trusted by default. The
+    /// arm is unreachable while `Preferred::default()` advertises no
+    /// certificate algorithm, so this pins the behaviour if that changes.
+    #[tokio::test]
+    async fn check_server_key_rejects_a_host_certificate_under_enforcing_policies() {
+        let cert = Certificate::from_openssh(TEST_HOST_CERT).expect("test cert should parse");
+        let offered = PublicKeyOrCertificate::Certificate(cert);
+
+        for policy in [HostKeyPolicy::Yes, HostKeyPolicy::AcceptNew] {
+            let temp = tempfile::tempdir().expect("temp dir should be created");
+            let path = temp.path().join("known_hosts");
+            let verifier = HostKeyVerifier::new(policy, Some(path.clone()), "host", 22)
+                .expect("verifier should build");
+            let mut handler = ClientHandler { verifier };
+
+            assert!(
+                !handler
+                    .check_server_key(&offered)
+                    .await
+                    .expect("check_server_key should not error"),
+                "{policy:?} must refuse a certificate it cannot validate"
+            );
+            assert!(
+                !path.exists(),
+                "{policy:?} must not record anything for a refused certificate"
+            );
+        }
+    }
+
+    /// `no`/`off` disable host-key validation outright, so refusing a
+    /// certificate there would contradict the policy the user chose.
+    #[tokio::test]
+    async fn check_server_key_accepts_a_host_certificate_when_validation_is_disabled() {
+        let cert = Certificate::from_openssh(TEST_HOST_CERT).expect("test cert should parse");
+        let offered = PublicKeyOrCertificate::Certificate(cert);
+
+        for policy in [HostKeyPolicy::No, HostKeyPolicy::Off] {
+            let verifier =
+                HostKeyVerifier::new(policy, None, "host", 22).expect("verifier should build");
+            let mut handler = ClientHandler { verifier };
+
+            assert!(
+                handler
+                    .check_server_key(&offered)
+                    .await
+                    .expect("check_server_key should not error"),
+                "{policy:?} disables validation and must not refuse a certificate"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1454,7 +1536,7 @@ mod tests {
 
         assert!(
             !handler
-                .check_server_key(&key)
+                .check_server_key(&offered(&key))
                 .await
                 .expect("check_server_key should not error"),
             "a persistence failure must reject the session (fail-closed), not trust the key"
@@ -1480,7 +1562,8 @@ mod tests {
         let mut handler = ClientHandler { verifier };
 
         let start = Instant::now();
-        let check = handler.check_server_key(&key);
+        let offered_key = offered(&key);
+        let check = handler.check_server_key(&offered_key);
         let sibling_done_at = std::sync::Arc::new(std::sync::Mutex::new(None));
         let sibling_done_at_write = sibling_done_at.clone();
         let sibling = async move {
