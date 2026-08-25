@@ -1,0 +1,80 @@
+---
+name: fuzz-cron
+
+# ClusterFuzzLite corpus maintenance. The `fuzz` workflow runs on every PR and
+# master push in code-change mode, which only ever *reads* a stored corpus —
+# batch mode is what produces one. Without this workflow every run of every
+# target starts from an empty corpus and never gets past the shallow inputs a
+# mutator can reach in its first few minutes.
+on:
+  schedule:
+    - cron: "23 3 * * *" # batch, daily 03:23 UTC
+    - cron: "47 4 * * 0" # prune, Sunday 04:47 UTC
+  workflow_dispatch: {}
+
+permissions:
+  # run_fuzzers reads the stored corpus through the REST API; the matching
+  # upload goes over ACTIONS_RUNTIME_TOKEN and needs no token scope.
+  actions: read
+  contents: read
+
+concurrency:
+  # Both jobs rewrite the same stored corpus, so they must never overlap.
+  group: fuzz-corpus
+  cancel-in-progress: false
+
+jobs:
+  batch:
+    # Also the workflow_dispatch default: growing the corpus is the useful
+    # thing to trigger by hand.
+    if: github.event.schedule != '47 4 * * 0'
+    name: batch (${{ matrix.sanitizer }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build fuzzers (${{ matrix.sanitizer }})
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          sanitizer: ${{ matrix.sanitizer }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run fuzzers (${{ matrix.sanitizer }})
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # Split across the four targets, so ~7 minutes each per night.
+          fuzz-seconds: 1800
+          mode: batch
+          sanitizer: ${{ matrix.sanitizer }}
+
+  prune:
+    if: github.event.schedule == '47 4 * * 0'
+    name: prune
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prune corpus
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 600
+          mode: prune
