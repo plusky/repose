@@ -1,8 +1,11 @@
 ---
 name: fuzz
 # ClusterFuzzLite: builds the cargo-fuzz targets in fuzz/ and runs each for
-# a short burst on every pull request and master push. A crash fails the
-# job and is uploaded as an artifact. Rust uses the address sanitizer.
+# a short burst on every pull request and master push, seeded by the corpus
+# that cflite_cron.yml accumulates. A crash fails the job and is uploaded as
+# an artifact. Address is the only sanitizer worth a leg here: it already
+# covers leaks, rustc has no UBSan backend, and MSan/TSan would need a fully
+# instrumented std.
 on:
   pull_request:
   push:
@@ -33,6 +36,9 @@ jobs:
         with:
           language: rust
           sanitizer: ${{ matrix.sanitizer }}
+          # Without it the coverage lookup 401s: the artifacts API rejects
+          # unauthenticated reads even on a public repo.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run fuzzers (${{ matrix.sanitizer }})
         id: run
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1

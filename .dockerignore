@@ -2,16 +2,22 @@
 !tests/
 !tests/vectors/
 !tests/vectors/refhosts/
-!tests/vectors/refhosts/sles-16-0/
-!tests/vectors/refhosts/sles-16-0/products.d/
-!tests/vectors/refhosts/sles-16-0/products.d/*.prod
-!tests/vectors/refhosts/sles-16-0/zypper-x-lr.xml
+# sles-16-0 alone is what tests/ssh/Dockerfile installs; the rest are here
+# because .clusterfuzzlite/build.sh packs every refhost capture as the seed
+# corpus for the repo_xml and prod_parse targets.
+!tests/vectors/refhosts/*/
+!tests/vectors/refhosts/*/os-release
+!tests/vectors/refhosts/*/products.d/
+!tests/vectors/refhosts/*/products.d/*.prod
+!tests/vectors/refhosts/*/zypper-x-lr.xml
 # ClusterFuzzLite fuzz build context (.clusterfuzzlite/Dockerfile). Kept
-# minimal and deliberately excludes rust-toolchain.toml so the builder
-# image's nightly toolchain is used.
+# minimal. rust-toolchain.toml does reach this context (the perf runner below
+# needs it) but does not apply: the Dockerfile exports RUSTUP_TOOLCHAIN, which
+# outranks a toolchain file, so the builder image's nightly is still used.
 !/.clusterfuzzlite/
 !/.clusterfuzzlite/Dockerfile
 !/.clusterfuzzlite/build.sh
+!/.clusterfuzzlite/pack_seeds.py
 !/.clusterfuzzlite/project.yaml
 !/Cargo.toml
 !/crates/
@@ -20,8 +26,13 @@
 !/crates/repose-cli/
 !/fuzz/
 !/fuzz/Cargo.toml
+!/fuzz/dicts/
+!/fuzz/dicts/*.dict
 !/fuzz/fuzz_targets/
 !/fuzz/fuzz_targets/*.rs
+!/fuzz/seeds/
+!/fuzz/seeds/*/
+!/fuzz/seeds/*/*
 # tests/performance/runner/Dockerfile (the perf-harness runner image):
 # resolves `stable` against the repository's own pin at build time.
 !/rust-toolchain.toml

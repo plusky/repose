@@ -1,0 +1,11 @@
+# Version separators plus the four-colon repo-name shape
+# `product_from_repo_name` requires.
+"-"
+"."
+":"
+"SP"
+"ALL"
+"15-SP"
+"::"
+":pool"
+":update"

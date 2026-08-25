@@ -143,8 +143,14 @@ change, whatever a comment nearby says about where it came from.
   output; update them only for an intentional, documented behavior change.
 - Parser fuzz targets live in `fuzz/` (cargo-fuzz, nightly-only, detached
   from the workspace so they do not affect the MSRV, `Cargo.lock`, or
-  `cargo deny`). CI runs them via ClusterFuzzLite (the `fuzz` workflow);
-  locally use `cargo +nightly fuzz run <target>`.
+  `cargo deny`). CI runs them via ClusterFuzzLite: the `fuzz` workflow fuzzes
+  each PR and master push from the stored corpus, and `fuzz-cron` grows that
+  corpus nightly and prunes it weekly. Locally use
+  `cargo +nightly fuzz run <target>`.
+- A new fuzz target needs a seed corpus and a dictionary wired up in
+  `.clusterfuzzlite/build.sh`. Seeds for the file-format targets come from
+  `tests/vectors/refhosts/`, never a second copy; hand-written inputs for the
+  string targets live in `fuzz/seeds/<target>/`, one input per file.
 - A dependency change must update `Cargo.lock`, preserve the MSRV, and pass
   `cargo deny check`. Prefer the smallest compatible version change; do not
   run a broad `cargo update` as part of an unrelated change.
